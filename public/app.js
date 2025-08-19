@@ -227,37 +227,87 @@ function colorToRgba(c) {
 btnSave.onclick = async () => {
   if (!pdfUrl) { setStatus('No PDF loaded'); return; }
   setStatus('Saving…');
+
+  // Commit any in-progress edits so text value is captured
+  Object.values(overlays).forEach(cv => {
+    cv.getObjects().forEach(o => {
+      if (o.type === 'i-text' && o.isEditing) o.exitEditing();
+    });
+  });
+
   const edits = [];
-  for (let p=1; p<=pageCount; p++) {
+  for (let p = 1; p <= pageCount; p++) {
     const cv = overlays[p];
     const dims = pageDims[p];
+    if (!cv || !dims) continue;
+
     const pageOps = [];
     cv.getObjects().forEach(o => {
+      // ignore invisible/zero-size artifacts
+      if (o.visible === false) return;
+
       if (o.type === 'i-text') {
         const fill = colorToRgba(o.fill);
-        pageOps.push({ type:'text', left:o.left, top:o.top, fontSize:o.fontSize, text:o.text, color:fill });
+        const text = (o.text || '').toString();
+        if (text.length === 0) return;
+        pageOps.push({
+          type: 'text',
+          left: o.left,
+          top: o.top,
+          fontSize: o.fontSize,
+          text: text,
+          color: fill
+        });
       } else if (o.type === 'rect') {
         const stroke = colorToRgba(o.stroke);
         const fill = colorToRgba(o.fill);
+        const w = (o.width || 0) * (o.scaleX || 1);
+        const h = (o.height || 0) * (o.scaleY || 1);
+        if (w <= 0 || h <= 0) return;
         pageOps.push({
-          type: (fill.a > 0 && fill.r===255 && fill.g===255 && fill.b===0) ? 'highlight' : 'rect',
-          left:o.left, top:o.top, width:o.width*o.scaleX, height:o.height*o.scaleY,
-          stroke, strokeWidth:o.strokeWidth||0, fill
+          type: (fill.a > 0 && fill.r === 255 && fill.g === 255 && fill.b === 0) ? 'highlight' : 'rect',
+          left: o.left,
+          top: o.top,
+          width: w,
+          height: h,
+          stroke,
+          strokeWidth: o.strokeWidth || 0,
+          fill
         });
       }
     });
-    edits.push({ page:p, canvasWidth:dims.canvasWidth, canvasHeight:dims.canvasHeight, ops:pageOps });
+
+    edits.push({
+      page: p,
+      canvasWidth: dims.canvasWidth,
+      canvasHeight: dims.canvasHeight,
+      ops: pageOps
+    });
   }
 
-  const res = await fetch(window.PDF_EDITOR_CONFIG.saveUrl, {
-    method: 'POST', headers: {'Content-Type':'application/json'},
-    body: JSON.stringify({ pdfUrl, edits })
-  });
-  const data = await res.json().catch(()=>({}));
-  if (!res.ok || !data.ok) { setStatus((data && data.error) || 'Save failed'); return; }
-  setStatus('Saved ✓');
-  const a = document.createElement('a'); a.href = data.url; a.download = ''; a.click();
+  try {
+    const res = await fetch(window.PDF_EDITOR_CONFIG.saveUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ pdfUrl, edits })
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || !data.ok) {
+      console.error('Save error payload:', data);
+      setStatus((data && data.error) || 'Save failed (server error)');
+      return;
+    }
+    setStatus('Saved ✓');
+    const a = document.createElement('a');
+    a.href = data.url;
+    a.download = '';
+    a.click();
+  } catch (err) {
+    console.error(err);
+    setStatus('Save failed (network error)');
+  }
 };
+
 
 function anyTextEditing() {
   return Object.values(overlays).some(cv => {
